@@ -35,6 +35,25 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          api_get_json() {
+            local url="$1"
+            local attempts=6
+            local delay=2
+            local n
+            for n in $(seq 1 "$attempts"); do
+              if body="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$url")"; then
+                printf '%s\n' "$body"
+                return 0
+              fi
+              if [[ "$n" -lt "$attempts" ]]; then
+                echo "API request failed ($n/$attempts), retrying in ${delay}s: $url"
+                sleep "$delay"
+                delay=$((delay * 2))
+              fi
+            done
+            echo "Failed to query API after retries: $url" >&2
+            return 1
+          }
 
           if [[ -n "${INPUT_VERSION}" ]]; then
             TAG="desktop-v${INPUT_VERSION}"
@@ -43,7 +62,7 @@ jobs:
             API_URL="https://api.github.com/repos/bitwarden/clients/releases/latest"
           fi
 
-          RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API_URL")"
+          RELEASE_JSON="$(api_get_json "$API_URL")"
           UPSTREAM_TAG="$(jq -r '.tag_name' <<< "$RELEASE_JSON")"
           UPSTREAM_URL="$(jq -r '.html_url' <<< "$RELEASE_JSON")"
           UPSTREAM_NAME="$(jq -r '.name' <<< "$RELEASE_JSON")"
@@ -96,15 +115,29 @@ jobs:
           set -euo pipefail
           source work/build.env
           echo "out_appimage=${OUT_APPIMAGE}" >> "$GITHUB_OUTPUT"
+          echo "out_sha256_file=${OUT_SHA256_FILE}" >> "$GITHUB_OUTPUT"
           echo "upstream_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
           echo "upstream_version=${UPSTREAM_VERSION}" >> "$GITHUB_OUTPUT"
           echo "out_sha256=${OUT_SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test AppImage runtime
+        run: |
+          set -euo pipefail
+          APPIMAGE="${{ steps.meta.outputs.out_appimage }}"
+          test -f "$APPIMAGE"
+          chmod +x "$APPIMAGE"
+          file "$APPIMAGE" | grep -qi 'ARM aarch64'
+          VERSION_OUT="$("$APPIMAGE" --appimage-version)"
+          test -n "$VERSION_OUT"
+          echo "Runtime version output: $VERSION_OUT"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: bitwarden-${{ steps.meta.outputs.upstream_version }}-aarch64-appimage
-          path: ${{ steps.meta.outputs.out_appimage }}
+          path: |
+            ${{ steps.meta.outputs.out_appimage }}
+            ${{ steps.meta.outputs.out_sha256_file }}
 
       - name: Generate release notes with upstream changelog
         env:
@@ -115,7 +148,26 @@ jobs:
           UPSTREAM_NAME: ${{ needs.check-upstream.outputs.upstream_name }}
         run: |
           set -euo pipefail
-          RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/bitwarden/clients/releases/tags/${UPSTREAM_TAG}")"
+          api_get_json_auth() {
+            local url="$1"
+            local attempts=6
+            local delay=2
+            local n
+            for n in $(seq 1 "$attempts"); do
+              if body="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${GH_TOKEN}" "$url")"; then
+                printf '%s\n' "$body"
+                return 0
+              fi
+              if [[ "$n" -lt "$attempts" ]]; then
+                echo "API request failed ($n/$attempts), retrying in ${delay}s: $url"
+                sleep "$delay"
+                delay=$((delay * 2))
+              fi
+            done
+            echo "Failed to query API after retries: $url" >&2
+            return 1
+          }
+          RELEASE_JSON="$(api_get_json_auth "https://api.github.com/repos/bitwarden/clients/releases/tags/${UPSTREAM_TAG}")"
           UPSTREAM_BODY="$(jq -r '.body // ""' <<< "$RELEASE_JSON")"
 
           {
@@ -138,6 +190,7 @@ jobs:
             echo
             echo "## Build details"
             echo "- Artifact SHA256: \`${{ steps.meta.outputs.out_sha256 }}\`"
+            echo "- Checksum file: \`$(basename "${{ steps.meta.outputs.out_sha256_file }}")\`"
           } > RELEASE_NOTES.md
 
       - name: Create GitHub release
@@ -148,6 +201,7 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             ${{ steps.meta.outputs.out_appimage }}
+            ${{ steps.meta.outputs.out_sha256_file }}
 
   no-op:
     needs: check-upstream

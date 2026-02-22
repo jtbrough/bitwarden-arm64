@@ -39,14 +39,36 @@ need_cmd() {
 
 curl_json() {
   local url="$1"
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-      "$url"
-  else
-    curl -fsSL -H "Accept: application/vnd.github+json" "$url"
-  fi
+  local attempt max_attempts delay
+  max_attempts=6
+  delay=2
+  attempt=1
+
+  while (( attempt <= max_attempts )); do
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      if curl -fsSL \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        "$url"; then
+        return 0
+      fi
+    else
+      if curl -fsSL -H "Accept: application/vnd.github+json" "$url"; then
+        return 0
+      fi
+    fi
+
+    if (( attempt == max_attempts )); then
+      break
+    fi
+
+    log "API request failed (attempt ${attempt}/${max_attempts}), retrying in ${delay}s"
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+    attempt=$(( attempt + 1 ))
+  done
+
+  die "Failed to fetch API response after ${max_attempts} attempts: ${url}"
 }
 
 find_squashfs_offset() {
@@ -198,15 +220,18 @@ main() {
     file "$build_dir/verify/bitwarden-app" | grep -qi 'ARM aarch64' || die "Embedded bitwarden-app is not ARM aarch64"
   fi
 
-  local sha
+  local sha out_sha_file
   sha="$(sha256sum "$out_appimage" | awk '{print $1}')"
+  out_sha_file="${out_appimage}.sha256"
+  printf '%s  %s\n' "$sha" "$(basename "$out_appimage")" > "$out_sha_file"
   echo "OUT_APPIMAGE=$out_appimage" > "$WORK_DIR/build.env"
+  echo "OUT_SHA256_FILE=$out_sha_file" >> "$WORK_DIR/build.env"
   echo "UPSTREAM_TAG=$release_tag" >> "$WORK_DIR/build.env"
   echo "UPSTREAM_VERSION=$version" >> "$WORK_DIR/build.env"
   echo "OUT_SHA256=$sha" >> "$WORK_DIR/build.env"
 
   log "Done"
-  printf 'Output: %s\nSHA256: %s\nTag: %s\n' "$out_appimage" "$sha" "$release_tag"
+  printf 'Output: %s\nSHA256: %s\nChecksum File: %s\nTag: %s\n' "$out_appimage" "$sha" "$out_sha_file" "$release_tag"
 }
 
 main "$@"
