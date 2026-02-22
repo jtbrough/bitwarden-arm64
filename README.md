@@ -21,9 +21,19 @@ This repository publishes community-built Linux ARM64 AppImages for Bitwarden De
 
 ## Local build
 
+Required dependencies:
+
+- `bash`
+- `curl`
+- `jq`
+- `tar`
+- `file`
+- `unsquashfs` and `mksquashfs` (usually from `squashfs-tools`)
+- `grep`, `awk`, `sed`, `sha256sum`
+
+Run:
+
 ```bash
-sudo apt-get update
-sudo apt-get install -y curl jq tar file squashfs-tools
 ./scripts/build.sh --version 2026.1.1
 ```
 
