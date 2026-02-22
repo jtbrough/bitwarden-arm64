@@ -24,6 +24,8 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
       upstream_tag: ${{ steps.check.outputs.upstream_tag }}
       upstream_version: ${{ steps.check.outputs.upstream_version }}
+      upstream_url: ${{ steps.check.outputs.upstream_url }}
+      upstream_name: ${{ steps.check.outputs.upstream_name }}
     steps:
       - name: Resolve upstream release and check existing repo release
         id: check
@@ -43,6 +45,8 @@ jobs:
 
           RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API_URL")"
           UPSTREAM_TAG="$(jq -r '.tag_name' <<< "$RELEASE_JSON")"
+          UPSTREAM_URL="$(jq -r '.html_url' <<< "$RELEASE_JSON")"
+          UPSTREAM_NAME="$(jq -r '.name' <<< "$RELEASE_JSON")"
           VERSION="$(jq -r '.assets[] | select(.name | test("^Bitwarden-[0-9.]+-x86_64\\.AppImage$")) | .name' <<< "$RELEASE_JSON" | head -n1 | sed -E 's/^Bitwarden-([0-9.]+)-x86_64\.AppImage$/\1/')"
 
           [[ -n "$UPSTREAM_TAG" && "$UPSTREAM_TAG" != "null" ]] || { echo "Missing upstream tag"; exit 1; }
@@ -61,6 +65,8 @@ jobs:
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
           echo "upstream_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
           echo "upstream_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "upstream_url=${UPSTREAM_URL}" >> "$GITHUB_OUTPUT"
+          echo "upstream_name=${UPSTREAM_NAME}" >> "$GITHUB_OUTPUT"
 
   build-and-release:
     needs: check-upstream
@@ -100,17 +106,46 @@ jobs:
           name: bitwarden-${{ steps.meta.outputs.upstream_version }}-aarch64-appimage
           path: ${{ steps.meta.outputs.out_appimage }}
 
+      - name: Generate release notes with upstream changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.meta.outputs.upstream_tag }}
+          UPSTREAM_VERSION: ${{ steps.meta.outputs.upstream_version }}
+          UPSTREAM_URL: ${{ needs.check-upstream.outputs.upstream_url }}
+          UPSTREAM_NAME: ${{ needs.check-upstream.outputs.upstream_name }}
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/bitwarden/clients/releases/tags/${UPSTREAM_TAG}")"
+          UPSTREAM_BODY="$(jq -r '.body // ""' <<< "$RELEASE_JSON")"
+
+          {
+            echo "# Bitwarden ${UPSTREAM_VERSION} (ARM64 AppImage)"
+            echo
+            echo "This release is rebuilt from official Bitwarden assets for Linux ARM64."
+            echo
+            echo "## References"
+            echo "- Upstream release: [${UPSTREAM_NAME}](${UPSTREAM_URL})"
+            echo "- Upstream tag: [\`${UPSTREAM_TAG}\`](https://github.com/bitwarden/clients/releases/tag/${UPSTREAM_TAG})"
+            echo "- Upstream repository: [bitwarden/clients](https://github.com/bitwarden/clients)"
+            echo
+            echo "## Upstream changelog"
+            echo
+            if [[ -n "${UPSTREAM_BODY}" ]]; then
+              printf '%s\n' "${UPSTREAM_BODY}"
+            else
+              echo "_No upstream changelog text was provided in the release body._"
+            fi
+            echo
+            echo "## Build details"
+            echo "- Artifact SHA256: \`${{ steps.meta.outputs.out_sha256 }}\`"
+          } > RELEASE_NOTES.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.upstream_tag }}
           name: Bitwarden ${{ steps.meta.outputs.upstream_version }} (ARM64 AppImage)
-          body: |
-            Rebuilt ARM64 AppImage for upstream Bitwarden release `${{ steps.meta.outputs.upstream_tag }}`.
-
-            - Upstream repo: https://github.com/bitwarden/clients
-            - Upstream tag: `${{ steps.meta.outputs.upstream_tag }}`
-            - Artifact SHA256: `${{ steps.meta.outputs.out_sha256 }}`
+          body_path: RELEASE_NOTES.md
           files: |
             ${{ steps.meta.outputs.out_appimage }}
 
