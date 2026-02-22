@@ -1,0 +1,125 @@
+name: Build and Release ARM64 AppImage
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Bitwarden desktop version (e.g. 2026.1.1). Leave empty for latest."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bitwarden-arm64-release
+  cancel-in-progress: false
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      upstream_version: ${{ steps.check.outputs.upstream_version }}
+    steps:
+      - name: Resolve upstream release and check existing repo release
+        id: check
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            TAG="desktop-v${INPUT_VERSION}"
+            API_URL="https://api.github.com/repos/bitwarden/clients/releases/tags/${TAG}"
+          else
+            API_URL="https://api.github.com/repos/bitwarden/clients/releases/latest"
+          fi
+
+          RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API_URL")"
+          UPSTREAM_TAG="$(jq -r '.tag_name' <<< "$RELEASE_JSON")"
+          VERSION="$(jq -r '.assets[] | select(.name | test("^Bitwarden-[0-9.]+-x86_64\\.AppImage$")) | .name' <<< "$RELEASE_JSON" | head -n1 | sed -E 's/^Bitwarden-([0-9.]+)-x86_64\.AppImage$/\1/')"
+
+          [[ -n "$UPSTREAM_TAG" && "$UPSTREAM_TAG" != "null" ]] || { echo "Missing upstream tag"; exit 1; }
+          [[ -n "$VERSION" ]] || { echo "Could not parse version"; exit 1; }
+
+          STATUS="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${REPO}/releases/tags/${UPSTREAM_TAG}")"
+
+          if [[ "$STATUS" == "200" ]]; then
+            SHOULD_BUILD=false
+            echo "Release ${UPSTREAM_TAG} already exists in ${REPO}"
+          else
+            SHOULD_BUILD=true
+            echo "Release ${UPSTREAM_TAG} does not exist in ${REPO}; build required"
+          fi
+
+          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl jq tar file squashfs-tools
+
+      - name: Build AppImage
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build.sh
+          scripts/build.sh --tag "${{ needs.check-upstream.outputs.upstream_tag }}"
+
+      - name: Load build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          source work/build.env
+          echo "out_appimage=${OUT_APPIMAGE}" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=${UPSTREAM_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "out_sha256=${OUT_SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitwarden-${{ steps.meta.outputs.upstream_version }}-aarch64-appimage
+          path: ${{ steps.meta.outputs.out_appimage }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.upstream_tag }}
+          name: Bitwarden ${{ steps.meta.outputs.upstream_version }} (ARM64 AppImage)
+          body: |
+            Rebuilt ARM64 AppImage for upstream Bitwarden release `${{ steps.meta.outputs.upstream_tag }}`.
+
+            - Upstream repo: https://github.com/bitwarden/clients
+            - Upstream tag: `${{ steps.meta.outputs.upstream_tag }}`
+            - Artifact SHA256: `${{ steps.meta.outputs.out_sha256 }}`
+          files: |
+            ${{ steps.meta.outputs.out_appimage }}
+
+  no-op:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: No new upstream release
+        run: |
+          echo "No new upstream release to publish."
+          echo "Latest upstream tag: ${{ needs.check-upstream.outputs.upstream_tag }}"
