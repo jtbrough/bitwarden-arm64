@@ -1,15 +1,15 @@
-# bitwarden-arm64
+# bitwarden-aarch64 (ARM64) for Linux
 
-This project exists because official Bitwarden Linux ARM64 support is currently incomplete for common Linux distribution channels.
+This project exists because official Bitwarden Linux aarch64 support is currently incomplete for common Linux distribution channels.
 
-As of February 22, 2026, Bitwarden does not provide a complete first-party Linux ARM64 delivery story across key channels such as Homebrew, Flatpak, Snap, and AppImage.
+As of February 22, 2026, Bitwarden does not provide a complete first-party Linux aarch64 delivery story across key channels such as Homebrew, Flatpak, Snap, and AppImage.
 
-This repository publishes community-built Linux ARM64 AppImages for Bitwarden Desktop and will continue doing so until Bitwarden provides formal, first-party Linux on ARM support.
+This repository publishes community-built Linux aarch64 AppImages for Bitwarden Desktop and will continue doing so until Bitwarden provides formal, first-party Linux on ARM support.
 
 ## Scope
 
 - Track upstream Bitwarden desktop releases from `bitwarden/clients`
-- Rebuild ARM64 AppImages from official upstream release assets
+- Rebuild aarch64 AppImages from official upstream release assets
 - Publish releases with the same upstream tag (for example `desktop-v2026.1.1`)
 - Include upstream changelog content and links back to the matching Bitwarden release
 
