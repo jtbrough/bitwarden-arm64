@@ -2,7 +2,7 @@ name: Build and Release ARM64 AppImage
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "1 0,12 * * *"
   workflow_dispatch:
     inputs:
       version:
@@ -40,18 +40,29 @@ jobs:
             local attempts=6
             local delay=2
             local n
+            local response
+            local http_code
+            local body
             for n in $(seq 1 "$attempts"); do
-              if body="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$url")"; then
+              response="$(curl -sSL -w '\n%{http_code}' \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'User-Agent: bitwarden-aarch64-actions' \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                "$url" || true)"
+              http_code="${response##*$'\n'}"
+              body="${response%$'\n'*}"
+
+              if [[ "$http_code" == "200" ]]; then
                 printf '%s\n' "$body"
                 return 0
               fi
               if [[ "$n" -lt "$attempts" ]]; then
-                echo "API request failed ($n/$attempts), retrying in ${delay}s: $url"
+                echo "API request failed ($n/$attempts) with HTTP ${http_code}, retrying in ${delay}s: $url"
                 sleep "$delay"
                 delay=$((delay * 2))
               fi
             done
-            echo "Failed to query API after retries: $url" >&2
+            echo "Failed to query API after retries (last HTTP ${http_code}): $url" >&2
             return 1
           }
 
